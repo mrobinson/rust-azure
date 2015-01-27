@@ -268,7 +268,7 @@ pub enum SurfaceFormat {
 }
 
 impl SurfaceFormat {
-    fn as_azure_surface_format(self) -> AzSurfaceFormat {
+    pub fn as_azure_surface_format(self) -> AzSurfaceFormat {
         self as AzSurfaceFormat
     }
 
@@ -411,14 +411,14 @@ impl DrawTarget {
         }
     }
 
-    pub fn new_with_fbo(backend: BackendType,
-                        native_graphics_context: SkiaGrGLNativeContextRef,
-                        size: Size2D<i32>,
-                        format: SurfaceFormat) -> DrawTarget {
+    pub fn new_with_shared_surface(backend: BackendType,
+                                   native_graphics_context: SkiaGrGLNativeContextRef,
+                                   shared_surface: SkiaGrGLSharedSurfaceRef,
+                                   size: Size2D<i32>,
+                                   format: SurfaceFormat) -> DrawTarget {
         assert!(backend == BackendType::Skia);
-        let native_surface = native_graphics_context as SkiaGrGLSharedSurfaceRef;
         let skia_context = unsafe {
-            SkiaSkNativeSharedGLContextCreate(native_graphics_context, size.width, size.height)
+            SkiaSkNativeSharedGLContextCreate(native_graphics_context, shared_surface, size.width, size.height)
         };
 
         if skia_context.is_null() {
@@ -745,12 +745,14 @@ pub enum DrawTargetBacking {
     Empty, // The backing is completely owned by the DrawTarget.
     Data(Arc<Vec<u8>>),
     SkiaContext(SkiaSkNativeSharedGLContextRef),
+    SkiaSharedSurface(SkiaGrGLSharedSurfaceRef),
 }
 
 impl Drop for DrawTargetBacking {
     fn drop(&mut self) {
         match *self {
-            DrawTargetBacking::Empty | DrawTargetBacking::Data(_) => { }
+            DrawTargetBacking::Empty | DrawTargetBacking::Data(_) |
+            DrawTargetBacking::SkiaSharedSurface(_) => { }
             DrawTargetBacking::SkiaContext(skia_context) => unsafe {
                 SkiaSkNativeSharedGLContextRelease(skia_context);
             }
@@ -767,12 +769,17 @@ impl DrawTargetBacking {
                 unsafe { SkiaSkNativeSharedGLContextRetain(skia_context); }
                 DrawTargetBacking::SkiaContext(skia_context)
             }
+
+            // We don't copy the surface, because changes will be propagated
+            // during the final upload anyway.
+            DrawTargetBacking::SkiaSharedSurface(_) => DrawTargetBacking::Empty,
         }
     }
 
     pub fn make_current(&self) {
         match *self {
-            DrawTargetBacking::Empty | DrawTargetBacking::Data(_) => { }
+            DrawTargetBacking::Empty | DrawTargetBacking::Data(_) |
+            DrawTargetBacking::SkiaSharedSurface(_) => { }
             DrawTargetBacking::SkiaContext(skia_context) => unsafe {
                 SkiaSkNativeSharedGLContextMakeCurrent(skia_context);
             }
@@ -781,7 +788,8 @@ impl DrawTargetBacking {
 
     pub fn flush(&self) {
         match *self {
-            DrawTargetBacking::Empty | DrawTargetBacking::Data(_) => { },
+            DrawTargetBacking::Empty | DrawTargetBacking::Data(_) |
+            DrawTargetBacking::SkiaSharedSurface(_) => { }
             DrawTargetBacking::SkiaContext(skia_context) => unsafe {
                 SkiaSkNativeSharedGLContextFlush(skia_context);
             }
